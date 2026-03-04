@@ -4,9 +4,10 @@ require_once 'config/database.php';
 
 $db = Database::getInstance();
 $error = '';
+$rooms = []; // Initialisation par défaut
 
 try {
-    // Get all rooms with bed count
+    // Récupération de toutes les chambres avec le nombre de lits
     $rooms = $db->fetchAll("
         SELECT 
             r.room_id,
@@ -24,141 +25,111 @@ try {
         ORDER BY r.room_number
     ");
 } catch (Exception $e) {
-    $error = "Error fetching rooms: " . $e->getMessage();
+    $error = "Erreur lors du chargement des chambres : " . $e->getMessage();
+    // $rooms est déjà un tableau vide
 }
 ?>
 <!DOCTYPE html>
-<html lang="en">
+<html lang="fr">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Room Management - MediCore HMS</title>
+    <title>Gestion des chambres - MediCore HMS</title>
     <link rel="stylesheet" href="assets/css/style.css">
     <link href="https://fonts.googleapis.com/css2?family=Crimson+Pro:wght@400;600;700&family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
 </head>
 <body>
-    <?php
-include 'includes/header.php'; ?>
+    <?php include 'includes/header.php'; ?>
     
     <div class="container">
-        <?php
-include 'includes/sidebar.php'; ?>
+        <?php include 'includes/sidebar.php'; ?>
         
         <main class="main-content">
             <div class="page-header">
-                <h1>Room & Bed Management</h1>
-                <p class="subtitle">View room availability and bed occupancy</p>
+                <h1>Gestion des chambres et lits</h1>
+                <p class="subtitle">Visualiser la disponibilité des chambres et l'occupation des lits</p>
             </div>
 
-            <?php
-if ($error): ?>
-                <div class="alert alert-error"><?php
-echo $error; ?></div>
-            <?php
-endif; ?>
+            <?php if ($error): ?>
+                <div class="alert alert-error"><?= htmlspecialchars($error) ?></div>
+            <?php endif; ?>
 
-            <!-- Room Statistics -->
+            <!-- Statistiques des chambres -->
             <div class="stats-grid">
                 <div class="stat-card">
                     <div class="stat-content">
-                        <h3><?php
-echo count($rooms); ?></h3>
-                        <p>Total Rooms</p>
+                        <h3><?= count($rooms) ?></h3>
+                        <p>Total chambres</p>
                     </div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-content">
-                        <h3><?php
-echo array_sum(array_column($rooms, 'total_beds')); ?></h3>
-                        <p>Total Beds</p>
+                        <h3><?= array_sum(array_column($rooms, 'total_beds')) ?></h3>
+                        <p>Total lits</p>
                     </div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-content">
-                        <h3><?php
-echo array_sum(array_column($rooms, 'available_beds')); ?></h3>
-                        <p>Available Beds</p>
+                        <h3><?= array_sum(array_column($rooms, 'available_beds')) ?></h3>
+                        <p>Lits disponibles</p>
                     </div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-content">
-                        <h3><?php
-echo array_sum(array_column($rooms, 'occupied_beds')); ?></h3>
-                        <p>Occupied Beds</p>
+                        <h3><?= array_sum(array_column($rooms, 'occupied_beds')) ?></h3>
+                        <p>Lits occupés</p>
                     </div>
                 </div>
             </div>
 
-            <!-- Rooms Table -->
+            <!-- Tableau des chambres -->
             <div class="card">
                 <div class="card-header">
-                    <h2>Room Availability (<?php
-echo count($rooms); ?>)</h2>
-                    <input type="text" id="searchRoom" class="form-control" style="max-width: 300px;" placeholder="Search rooms...">
+                    <h2>Disponibilité des chambres (<?= count($rooms) ?>)</h2>
+                    <input type="text" id="searchRoom" class="form-control" style="max-width: 300px;" placeholder="Rechercher une chambre...">
                 </div>
                 <div class="table-responsive">
                     <table class="data-table">
                         <thead>
                             <tr>
-                                <th>Room ID</th>
-                                <th>Room Number</th>
+                                <th>ID</th>
+                                <th>N° chambre</th>
                                 <th>Type</th>
-                                <th>Ward</th>
-                                <th>Floor</th>
-                                <th>Daily Rate</th>
-                                <th>Total Beds</th>
-                                <th>Available</th>
-                                <th>Occupied</th>
-                                <th>Status</th>
+                                <th>Service</th>
+                                <th>Étage</th>
+                                <th>Tarif journalier</th>
+                                <th>Lits totaux</th>
+                                <th>Disponibles</th>
+                                <th>Occupés</th>
+                                <th>Statut</th>
                             </tr>
                         </thead>
                         <tbody id="roomTableBody">
-                            <?php
-if (empty($rooms)): ?>
+                            <?php if (empty($rooms)): ?>
                                 <tr>
-                                    <td colspan="10" class="text-center">No rooms found.</td>
+                                    <td colspan="10" class="text-center">Aucune chambre trouvée.</td>
                                 </tr>
-                            <?php
-else: ?>
-                                <?php
-foreach ($rooms as $room): ?>
+                            <?php else: ?>
+                                <?php foreach ($rooms as $room): ?>
                                     <?php
-                                        $availabilityClass = '';
-                                        $statusText = '';
-                                        if ($room['available_beds'] > 0) {
-                                            $availabilityClass = 'available';
-                                            $statusText = 'Available';
-                                        } else {
-                                            $availabilityClass = 'cancelled';
-                                            $statusText = 'Full';
-                                        }
+                                        // Détermination du statut de la chambre
+                                        $availabilityClass = ($room['available_beds'] > 0) ? 'available' : 'cancelled';
+                                        $statusText = ($room['available_beds'] > 0) ? 'Disponible' : 'Complet';
                                     ?>
                                     <tr>
-                                        <td><?php
-echo $room['room_id']; ?></td>
-                                        <td><strong><?php
-echo htmlspecialchars($room['room_number']); ?></strong></td>
-                                        <td><?php
-echo str_replace('_', ' ', $room['room_type']); ?></td>
-                                        <td><?php
-echo htmlspecialchars($room['ward'] ?? 'General'); ?></td>
-                                        <td><?php
-echo $room['floor_no'] ?: 'G'; ?></td>
-                                        <td>৳<?php
-echo number_format($room['daily_rate'], 2); ?></td>
-                                        <td><strong><?php
-echo $room['total_beds'] ?: '0'; ?></strong></td>
-                                        <td><span class="text-success"><?php
-echo $room['available_beds'] ?: '0'; ?></span></td>
-                                        <td><span class="text-danger"><?php
-echo $room['occupied_beds'] ?: '0'; ?></span></td>
-                                        <td><span class="badge badge-<?php
-echo $availabilityClass; ?>"><?php echo $statusText; ?></span></td>
+                                        <td><?= $room['room_id'] ?></td>
+                                        <td><strong><?= htmlspecialchars($room['room_number']) ?></strong></td>
+                                        <td><?= htmlspecialchars(str_replace('_', ' ', $room['room_type'])) ?></td>
+                                        <td><?= htmlspecialchars($room['ward'] ?? 'Général') ?></td>
+                                        <td><?= $room['floor_no'] ?: 'RDC' ?></td>
+                                        <td>৳<?= number_format($room['daily_rate'], 2) ?></td>
+                                        <td><strong><?= $room['total_beds'] ?: '0' ?></strong></td>
+                                        <td><span class="text-success"><?= $room['available_beds'] ?: '0' ?></span></td>
+                                        <td><span class="text-danger"><?= $room['occupied_beds'] ?: '0' ?></span></td>
+                                        <td><span class="badge badge-<?= $availabilityClass ?>"><?= $statusText ?></span></td>
                                     </tr>
-                                <?php
-endforeach; ?>
-                            <?php
-endif; ?>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
                         </tbody>
                     </table>
                 </div>
@@ -166,13 +137,12 @@ endif; ?>
         </main>
     </div>
 
-    <?php
-include 'includes/footer.php'; ?>
+    <?php include 'includes/footer.php'; ?>
     <script src="assets/js/main.js"></script>
     <script>
-        // Search functionality
+        // Fonction de recherche
         document.getElementById('searchRoom').addEventListener('keyup', function() {
-            const searchTerm = this.value.toLowerCase();
+            const searchTerm = this.value.toLowerCase().trim();
             const rows = document.querySelectorAll('#roomTableBody tr');
             
             rows.forEach(row => {
