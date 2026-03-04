@@ -6,56 +6,108 @@ $db = Database::getInstance();
 $message = '';
 $error = '';
 
-// Manual history entry (for non-trigger changes, e.g. admin notes)
+// Génération d'un token CSRF si nécessaire
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+
+// Fonction de validation d'un identifiant patient
+function validatePatientId($id, $db) {
+    $patient = $db->fetchOne("SELECT patient_id FROM patient WHERE patient_id = ?", [$id]);
+    return $patient !== false;
+}
+
+// Traitement des formulaires POST
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
-    if ($_POST['action'] === 'add') {
+    // Vérification CSRF
+    if (!isset($_POST['csrf_token']) || $_POST['csrf_token'] !== $_SESSION['csrf_token']) {
+        $error = "Erreur de sécurité. Veuillez réessayer.";
+    } else {
         try {
-            $sql = "INSERT INTO patient_history (patient_id, field_changed, old_value, new_value, change_description, changed_by)
-                    VALUES (?, ?, ?, ?, ?, ?)";
-            $db->execute($sql, [
-                $_POST['patient_id'],
-                $_POST['field_changed'],
-                $_POST['old_value'],
-                $_POST['new_value'],
-                $_POST['change_description'],
-                $_SESSION['full_name'] ?? $_SESSION['username'] ?? 'System',
-            ]);
-            $message = "History entry recorded!";
+            if ($_POST['action'] === 'add') {
+                // Validation des champs requis
+                $patientId = filter_var($_POST['patient_id'] ?? null, FILTER_VALIDATE_INT);
+                if (!$patientId || !validatePatientId($patientId, $db)) {
+                    throw new Exception("Patient invalide ou inexistant.");
+                }
+                $description = trim($_POST['change_description'] ?? '');
+                if (empty($description)) {
+                    throw new Exception("La description est requise.");
+                }
+
+                // Insertion manuelle dans l'historique
+                $sql = "INSERT INTO patient_history (patient_id, field_changed, old_value, new_value, change_description, changed_by)
+                        VALUES (?, ?, ?, ?, ?, ?)";
+                $db->execute($sql, [
+                    $patientId,
+                    !empty($_POST['field_changed']) ? trim($_POST['field_changed']) : null,
+                    !empty($_POST['old_value']) ? trim($_POST['old_value']) : null,
+                    !empty($_POST['new_value']) ? trim($_POST['new_value']) : null,
+                    $description,
+                    $_SESSION['full_name'] ?? $_SESSION['username'] ?? 'System',
+                ]);
+                $message = "Entrée d'historique ajoutée avec succès.";
+            } elseif ($_POST['action'] === 'delete') {
+                // Validation de l'ID de l'historique
+                $historyId = filter_var($_POST['history_id'] ?? null, FILTER_VALIDATE_INT);
+                if (!$historyId) {
+                    throw new Exception("ID d'historique invalide.");
+                }
+
+                // Suppression (vérification d'existence optionnelle mais sécuritaire)
+                $existing = $db->fetchOne("SELECT history_id FROM patient_history WHERE history_id = ?", [$historyId]);
+                if (!$existing) {
+                    throw new Exception("Enregistrement introuvable.");
+                }
+
+                $db->execute("DELETE FROM patient_history WHERE history_id = ?", [$historyId]);
+                $message = "Entrée supprimée.";
+            }
         } catch (Exception $e) {
-            $error = "Error: " . $e->getMessage();
-        }
-    } elseif ($_POST['action'] === 'delete') {
-        try {
-            $db->execute("DELETE FROM patient_history WHERE history_id=?", [$_POST['history_id']]);
-            $message = "Record deleted.";
-        } catch (Exception $e) {
-            $error = "Error: " . $e->getMessage();
+            $error = "Erreur : " . $e->getMessage();
         }
     }
 }
 
-$filter_patient = intval($_GET['patient_id'] ?? 0);
+// Récupération du filtre patient
+$filter_patient = isset($_GET['patient_id']) ? intval($_GET['patient_id']) : 0;
 
-$where = $filter_patient ? "WHERE ph.patient_id = $filter_patient" : "";
-$history = $db->fetchAll("
+// Construction de la requête avec paramètres
+$sql = "
     SELECT ph.history_id, ph.field_changed, ph.old_value, ph.new_value,
            ph.change_description, ph.changed_by, ph.changed_at,
            p.name AS patient_name, p.phone AS patient_phone
     FROM patient_history ph
     JOIN patient p ON ph.patient_id = p.patient_id
-    $where
-    ORDER BY ph.changed_at DESC
-    LIMIT 500
-");
+";
+$params = [];
+if ($filter_patient > 0) {
+    $sql .= " WHERE ph.patient_id = ?";
+    $params[] = $filter_patient;
+}
+$sql .= " ORDER BY ph.changed_at DESC LIMIT 500";
 
-$patients = $db->fetchAll("SELECT patient_id, name, phone FROM patient ORDER BY name");
+try {
+    $history = $db->fetchAll($sql, $params);
+} catch (Exception $e) {
+    $error = "Erreur lors du chargement de l'historique : " . $e->getMessage();
+    $history = [];
+}
+
+// Récupération de la liste des patients pour les sélecteurs
+try {
+    $patients = $db->fetchAll("SELECT patient_id, name, phone FROM patient ORDER BY name");
+} catch (Exception $e) {
+    $patients = [];
+    $error = "Erreur lors du chargement des patients : " . $e->getMessage();
+}
 ?>
 <!DOCTYPE html>
-<html lang="en">
+<html lang="fr">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Patient History - MediCore HMS</title>
+<title>Historique patient - MediCore HMS</title>
 <link rel="stylesheet" href="assets/css/style.css">
 <link href="https://fonts.googleapis.com/css2?family=Crimson+Pro:wght@400;600;700&family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
@@ -69,73 +121,79 @@ $patients = $db->fetchAll("SELECT patient_id, name, phone FROM patient ORDER BY 
 <?php include 'includes/sidebar.php'; ?>
 <main class="main-content">
 <div class="page-header">
-    <h1>Patient History</h1>
-    <p class="subtitle">Track all changes to patient records</p>
+    <h1>Historique patient</h1>
+    <p class="subtitle">Suivi des modifications des dossiers patients</p>
 </div>
 
-<?php if ($message): ?><div class="alert alert-success"><?= htmlspecialchars($message) ?></div><?php endif; ?>
-<?php if ($error):   ?><div class="alert alert-error"><?= htmlspecialchars($error) ?></div><?php endif; ?>
+<?php if ($message): ?>
+    <div class="alert alert-success"><?= htmlspecialchars($message) ?></div>
+<?php endif; ?>
+<?php if ($error): ?>
+    <div class="alert alert-error"><?= htmlspecialchars($error) ?></div>
+<?php endif; ?>
 
-<!-- Manual Entry Form -->
+<!-- Formulaire d'ajout manuel -->
 <div class="card">
-    <div class="card-header"><h2>Add Manual History Note</h2></div>
+    <div class="card-header"><h2>Ajouter une note manuelle</h2></div>
     <form method="POST">
         <input type="hidden" name="action" value="add">
+        <input type="hidden" name="csrf_token" value="<?= $_SESSION['csrf_token'] ?>">
+
         <div class="form-row">
             <div class="form-group">
                 <label class="form-label">Patient *</label>
                 <select name="patient_id" class="form-control" required>
-                    <option value="">Select Patient</option>
+                    <option value="">Sélectionner un patient</option>
                     <?php foreach ($patients as $p): ?>
-                        <option value="<?= $p['patient_id'] ?>" <?= ($filter_patient==$p['patient_id'])?'selected':'' ?>>
-                            <?= htmlspecialchars($p['name']) ?> — <?= $p['phone'] ?>
+                        <option value="<?= $p['patient_id'] ?>" <?= ($filter_patient == $p['patient_id']) ? 'selected' : '' ?>>
+                            <?= htmlspecialchars($p['name']) ?> — <?= htmlspecialchars($p['phone'] ?? '') ?>
                         </option>
                     <?php endforeach; ?>
                 </select>
             </div>
             <div class="form-group">
-                <label class="form-label">Field Changed</label>
-                <input type="text" name="field_changed" class="form-control" placeholder="e.g. allergies, address">
+                <label class="form-label">Champ modifié</label>
+                <input type="text" name="field_changed" class="form-control" placeholder="ex : allergies, adresse">
             </div>
         </div>
         <div class="form-row">
             <div class="form-group">
-                <label class="form-label">Old Value</label>
-                <textarea name="old_value" class="form-control" rows="2" placeholder="Previous value..."></textarea>
+                <label class="form-label">Ancienne valeur</label>
+                <textarea name="old_value" class="form-control" rows="2" placeholder="Valeur précédente..."></textarea>
             </div>
             <div class="form-group">
-                <label class="form-label">New Value</label>
-                <textarea name="new_value" class="form-control" rows="2" placeholder="New value..."></textarea>
+                <label class="form-label">Nouvelle valeur</label>
+                <textarea name="new_value" class="form-control" rows="2" placeholder="Nouvelle valeur..."></textarea>
             </div>
         </div>
         <div class="form-group">
-            <label class="form-label">Description / Reason</label>
-            <input type="text" name="change_description" class="form-control" required placeholder="Why was this changed?">
+            <label class="form-label">Description / Raison *</label>
+            <input type="text" name="change_description" class="form-control" required placeholder="Pourquoi cette modification ?">
         </div>
-        <button type="submit" class="btn btn-primary">Save History Note</button>
+        <button type="submit" class="btn btn-primary">Enregistrer la note</button>
     </form>
 </div>
 
-<!-- Filter -->
+<!-- Filtre -->
 <div class="card" style="padding:1rem 1.5rem;">
     <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">
-        <strong>Filter Patient:</strong>
+        <strong>Filtrer par patient :</strong>
         <select class="form-control" style="max-width:300px;" onchange="location.href='patient_history.php'+(this.value?'?patient_id='+this.value:'')">
-            <option value="">All Patients</option>
+            <option value="">Tous les patients</option>
             <?php foreach ($patients as $p): ?>
-                <option value="<?= $p['patient_id'] ?>" <?= $filter_patient==$p['patient_id']?'selected':'' ?>>
+                <option value="<?= $p['patient_id'] ?>" <?= $filter_patient == $p['patient_id'] ? 'selected' : '' ?>>
                     <?= htmlspecialchars($p['name']) ?>
                 </option>
             <?php endforeach; ?>
         </select>
-        <input type="text" id="searchHist" class="form-control" style="max-width:250px;" placeholder="Search history...">
-        <span class="text-muted text-small"><?= count($history) ?> record(s)</span>
+        <input type="text" id="searchHist" class="form-control" style="max-width:250px;" placeholder="Rechercher dans l'historique...">
+        <span class="text-muted text-small"><?= count($history) ?> enregistrement(s)</span>
     </div>
 </div>
 
-<!-- History Table -->
+<!-- Tableau d'historique -->
 <div class="card">
-    <div class="card-header"><h2>Change History</h2></div>
+    <div class="card-header"><h2>Historique des modifications</h2></div>
     <div class="table-responsive">
         <table class="data-table" id="histTable">
             <thead>
@@ -143,10 +201,10 @@ $patients = $db->fetchAll("SELECT patient_id, name, phone FROM patient ORDER BY 
                     <th>ID</th>
                     <th>Date</th>
                     <th>Patient</th>
-                    <th>Field</th>
-                    <th>Old → New</th>
+                    <th>Champ</th>
+                    <th>Ancien → Nouveau</th>
                     <th>Description</th>
-                    <th>Changed By</th>
+                    <th>Modifié par</th>
                     <th>Actions</th>
                 </tr>
             </thead>
@@ -155,32 +213,39 @@ $patients = $db->fetchAll("SELECT patient_id, name, phone FROM patient ORDER BY 
                 <tr>
                     <td><?= $h['history_id'] ?></td>
                     <td>
-                        <strong><?= date('M d, Y', strtotime($h['changed_at'])) ?></strong><br>
-                        <span class="text-small text-muted"><?= date('h:i A', strtotime($h['changed_at'])) ?></span>
+                        <strong><?= date('d M Y', strtotime($h['changed_at'])) ?></strong><br>
+                        <span class="text-small text-muted"><?= date('H:i', strtotime($h['changed_at'])) ?></span>
                     </td>
                     <td>
                         <?= htmlspecialchars($h['patient_name']) ?><br>
-                        <span class="text-small text-muted"><?= $h['patient_phone'] ?></span>
+                        <span class="text-small text-muted"><?= htmlspecialchars($h['patient_phone'] ?? '') ?></span>
                     </td>
                     <td><strong><?= htmlspecialchars($h['field_changed'] ?? '—') ?></strong></td>
                     <td>
-                        <?php if ($h['old_value']): ?><span class="diff-old"><?= htmlspecialchars(substr($h['old_value'], 0, 60)) ?></span><?php endif; ?>
-                        <?php if ($h['new_value']): ?> → <span class="diff-new"><?= htmlspecialchars(substr($h['new_value'], 0, 60)) ?></span><?php endif; ?>
-                        <?php if (!$h['old_value'] && !$h['new_value']): ?><span class="text-muted">—</span><?php endif; ?>
+                        <?php if (!empty($h['old_value'])): ?>
+                            <span class="diff-old"><?= htmlspecialchars(substr($h['old_value'], 0, 60)) ?></span>
+                        <?php endif; ?>
+                        <?php if (!empty($h['new_value'])): ?>
+                            → <span class="diff-new"><?= htmlspecialchars(substr($h['new_value'], 0, 60)) ?></span>
+                        <?php endif; ?>
+                        <?php if (empty($h['old_value']) && empty($h['new_value'])): ?>
+                            <span class="text-muted">—</span>
+                        <?php endif; ?>
                     </td>
                     <td><?= htmlspecialchars($h['change_description'] ?? '—') ?></td>
                     <td><?= htmlspecialchars($h['changed_by'] ?? '—') ?></td>
                     <td>
-                        <form method="POST" style="display:inline" onsubmit="return confirm('Delete this history entry?')">
+                        <form method="POST" style="display:inline" onsubmit="return confirm('Supprimer cette entrée ?')">
                             <input type="hidden" name="action" value="delete">
+                            <input type="hidden" name="csrf_token" value="<?= $_SESSION['csrf_token'] ?>">
                             <input type="hidden" name="history_id" value="<?= $h['history_id'] ?>">
-                            <button type="submit" class="btn btn-danger btn-sm">Del</button>
+                            <button type="submit" class="btn btn-danger btn-sm">Suppr.</button>
                         </form>
                     </td>
                 </tr>
             <?php endforeach; ?>
             <?php if (empty($history)): ?>
-                <tr><td colspan="8" class="text-center">No patient history records found.</td></tr>
+                <tr><td colspan="8" class="text-center">Aucun enregistrement trouvé.</td></tr>
             <?php endif; ?>
             </tbody>
         </table>
